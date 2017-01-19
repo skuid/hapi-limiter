@@ -100,10 +100,19 @@ exports.register =  function(server, options, done) {
       pluginSettings[hapiLimiter] &&
       pluginSettings[hapiLimiter].enable
     ) {
-      response = request.response;
-      response.headers['X-Rate-Limit-Limit'] = request.plugins[hapiLimiter].limit;
-      response.headers['X-Rate-Limit-Remaining'] = request.plugins[hapiLimiter].remaining;
-      response.headers['X-Rate-Limit-Reset'] = request.plugins[hapiLimiter].reset;
+        
+        response = request.response;
+        if(response.isBoom){
+              response.output.headers['X-Rate-Limit-Limit'] = request.plugins[hapiLimiter].limit;
+              response.output.headers['X-Rate-Limit-Remaining'] = request.plugins[hapiLimiter].remaining;
+              response.output.headers['X-Rate-Limit-Reset'] = request.plugins[hapiLimiter].reset;
+        }
+        else{
+            response.headers['X-Rate-Limit-Limit'] = request.plugins[hapiLimiter].limit;
+            response.headers['X-Rate-Limit-Remaining'] = request.plugins[hapiLimiter].remaining;
+            response.headers['X-Rate-Limit-Reset'] = request.plugins[hapiLimiter].reset;
+        }
+      
     }
 
     reply.continue();
