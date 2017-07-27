@@ -17,8 +17,8 @@
     "url": "https://github.com/cadecairos/hapi-limiter"
   },
   "dependencies": {
-    "boom": "^2.7.1",
-    "hoek": "^2.11.0"
+    "boom": "^5.0.0",
+    "hoek": "^4.0.0"
   },
   "devDependencies": {
     "async": "^1.0.0",
