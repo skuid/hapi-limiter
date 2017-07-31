@@ -1,8 +1,10 @@
-var Hoek = require('hoek');
+"use strict";
+
+var Hoek = require(`hoek`);
 
 var base = {
-  path: '/limited',
-  method: 'get',
+  path: `/limited`,
+  method: `get`,
   handler: function(request, reply) {
     reply();
   }
@@ -27,8 +29,8 @@ exports.overrides = Hoek.applyToDefaults(base, {
         enable: true,
         limit: 5,
         ttl: 8000,
-        generateKeyFunc: function(request) {
-          return 'customkey';
+        generateKeyFunc: function() {
+          return `customkey`;
         }
       }
     }
