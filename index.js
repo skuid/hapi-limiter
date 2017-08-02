@@ -1,7 +1,7 @@
 "use strict";
 
 var Hoek = require(`hoek`);
-var Boom = require(`boom`);
+var boom = require(`boom`);
 var async = require(`async`);
 var hapiLimiter = `hapi-limiter`;
 
@@ -82,27 +82,26 @@ exports.register = function(server, options, done) {
         if ( err ) { return callback(err); }
 
         if ( !cached ) {
-          reset = Date.now() + ttl;
-
           return cacheClient.set(keyValue, { remaining: limit - 1 }, ttl, (cerr) => {
             if ( cerr ) { return callback(cerr); }
-            remaining = limit - 1;
             if (name === `default`){
-              request.plugins[hapiLimiter].remaining = remaining;
+              request.plugins[hapiLimiter].remaining = limit - 1;
+              reset = Date.now() + ttl;
               request.plugins[hapiLimiter].reset = reset;
             }
             callback();
           });
         }
-        reset = Date.now() + cached.ttl;
         remaining = value.remaining - 1;
+        cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
+        reset = Date.now() + cached.ttl;
         if (name === `default`){
           request.plugins[hapiLimiter].reset = reset;
           request.plugins[hapiLimiter].remaining = remaining;
         }
 
         if ( remaining < 0 ) {
-          let error = Boom.tooManyRequests(`Rate Limit Exceeded`);
+          let error = boom.tooManyRequests(`Rate Limit Exceeded`);
 
           error.output.headers[`X-Rate-Limit-Limit`] = limit;
           error.output.headers[`X-Rate-Limit-Reset`] = reset;
@@ -111,7 +110,6 @@ exports.register = function(server, options, done) {
           return callback(error);
         }
 
-        cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
       });
     }
 
@@ -142,7 +140,6 @@ exports.register = function(server, options, done) {
       pluginSettings[hapiLimiter] &&
       pluginSettings[hapiLimiter].enable
     ) {
-      // response = request.response.isBoom ? request.response.output : request.response;
       response = request.response;
       response.headers[`X-Rate-Limit-Limit`] = request.plugins[hapiLimiter].limit;
       response.headers[`X-Rate-Limit-Remaining`] = request.plugins[hapiLimiter].remaining;
