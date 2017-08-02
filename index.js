@@ -89,11 +89,10 @@ exports.register = function(server, options, done) {
               reset = Date.now() + ttl;
               request.plugins[hapiLimiter].reset = reset;
             }
-            callback();
+            return callback();
           });
         }
         remaining = value.remaining - 1;
-        cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
         reset = Date.now() + cached.ttl;
         if (name === `default`){
           request.plugins[hapiLimiter].reset = reset;
@@ -109,7 +108,7 @@ exports.register = function(server, options, done) {
           error.reformat();
           return callback(error);
         }
-
+        return cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
       });
     }
 
