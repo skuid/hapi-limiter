@@ -19,10 +19,22 @@ var internals = {
       name: `default`,
       limit: 5,
       ttl: 5000,
+      route_type: "API",
     },{
       name: `daily`,
       limit: 720,
       ttl: 1000 * 60 * 60 * 24,
+      route_type: "API"
+    },{
+      name: `default`,
+      limit: 50,
+      ttl: 5000,
+      route_type: "UI",
+    },{
+      name: `daily`,
+      limit: 7200,
+      ttl: 1000 * 60 * 60 * 24,
+      route_type: "UI"
     }], */
     // default, single limit on the route
     limit: 15,
@@ -62,7 +74,6 @@ exports.register = function(server, options, done) {
     ) {
       return reply.continue();
     }
-
     var pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
 
     request.plugins[hapiLimiter] = {};
@@ -119,11 +130,30 @@ exports.register = function(server, options, done) {
       reply.continue();
     }
 
+    // if this site/organization has limits defined, check those
+    if (request.site && request.site.rate_limits && request.site.rate_limits.constructor === Array){
+      // e.g.: [{limit: 10, ttl: 1000, name: "default", route_type: "API"}, {limit: 100, ttl: 10000, name: "default", route_type: "UI"}]
+      let limits = [];
+
+      if (pluginSettings.route_type) {
+        // if a route type is assigned to this route, apply those limits
+        limits = request.site.rate_limits.filter(l => l.route_type === pluginSettings.route_type);
+      } else {
+        // if there is no route type assigned to this route, see if there are "general" limits for this organization
+        limits = request.site.rate_limits.filter(l => !l.route_type);
+      }
+      if (limits.length > 0){
+        return async.each(limits, checkLimit, handleCheckResult);
+      }
+    }
+
     if (pluginSettings.limits && pluginSettings.limits.constructor === Array){
-      // using async, do parallel check of all limits. If any fails, reply(err).
+      // If there were no organization-specific limits, apply global/plugin settings defined on this route
+      // Don't bother with `route_type`, since pluginSettings are specified directly on the route(s)
       return async.each(pluginSettings.limits, checkLimit, handleCheckResult);
     }
 
+    // else there will be a simple limit and ttl defined on the plugin settings by default above, use that
     return checkLimit({
       limit: pluginSettings.limit,
       ttl: pluginSettings.ttl,
