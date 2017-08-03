@@ -26,3 +26,7 @@ exports.complexSettings = {
     segment: `complex-segment`
   }
 };
+
+exports.APIRouteType = {
+  route_type: `API`,
+};

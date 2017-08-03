@@ -40,10 +40,11 @@ var internals = {
     limit: 15,
     ttl: 1000 * 60 * 15,
 
-    generateKeyFunc: function(request, name) {
+    generateKeyFunc: function(request, name, type) {
       var key = [];
 
       key.push(name);
+      key.push(type);
       key.push(request.method);
       key.push(request.path);
       var ip = request.headers[`x-forwarded-for`] || request.info.remoteAddress;
@@ -82,9 +83,10 @@ exports.register = function(server, options, done) {
       let limit = l.limit,
           ttl = l.ttl,
           name = l.name,
+          type = l.route_type,
           remaining,
           reset,
-          keyValue = pluginSettings.generateKeyFunc(request, name);
+          keyValue = pluginSettings.generateKeyFunc(request, name, type);
 
       if (name === `default`){
         request.plugins[hapiLimiter].limit = limit;
@@ -131,7 +133,9 @@ exports.register = function(server, options, done) {
     }
 
     // if this site/organization has limits defined, check those
-    if (request.site && request.site.rate_limits && request.site.rate_limits.constructor === Array){
+    let siteLimits = (request.site && request.site.rate_limits && request.site.rate_limits.constructor === Array);
+
+    if (siteLimits){
       // e.g.: [{limit: 10, ttl: 1000, name: "default", route_type: "API"}, {limit: 100, ttl: 10000, name: "default", route_type: "UI"}]
       let limits = [];
 

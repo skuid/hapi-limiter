@@ -36,3 +36,18 @@ exports.overrides = Hoek.applyToDefaults(base, {
     }
   }
 });
+
+exports.siteLimited = {
+  path: `/sitelimited`,
+  method: `get`,
+  handler: function(request, reply) {
+    reply();
+  },
+  config: {
+    plugins: {
+      'hapi-limiter': {
+        enable: true,
+      }
+    }
+  }
+};

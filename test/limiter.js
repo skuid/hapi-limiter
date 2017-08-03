@@ -18,11 +18,61 @@ var configs = {
   plugin: require(`./configs/plugin`)
 };
 
+var APISiteLimits = {
+  rate_limits: [
+    {
+      name: `default`,
+      ttl: 1000 * 60,
+      limit: 5,
+      route_type: `API`,
+    },
+    {
+      name: `daily`,
+      ttl: 1000 * 60 * 60 * 24,
+      limit: 10000,
+      route_type: `API`,
+    },
+  ]
+};
+
+var SiteLimits = {
+  rate_limits: [
+    {
+      name: `default`,
+      ttl: 1000 * 60,
+      limit: 5,
+    },
+    {
+      name: `daily`,
+      ttl: 1000 * 60 * 60 * 24,
+      limit: 10000,
+    },
+  ]
+};
+
 experiment(`hapi-ratelimiter`, () => {
   function inject(expectedCode, limit, remaining) {
     return function(done) {
       server.inject({
         url: `/limited`
+      }, (resp) => {
+        expect(resp.statusCode).to.equal(expectedCode);
+        expect(resp.headers[`x-rate-limit-limit`]).to.equal(limit);
+        expect(resp.headers[`x-rate-limit-remaining`]).to.equal(remaining);
+        expect(resp.headers[`x-rate-limit-reset`]).to.exist();
+        done();
+      });
+    };
+  }
+
+  function injectWithSiteLimits(expectedCode, limit, remaining, siteLimits) {
+    return function(done) {
+      server.ext(`onRequest`, (request, reply) => {
+        request.site = siteLimits || SiteLimits;
+        return reply.continue();
+      });
+      server.inject({
+        url: `/sitelimited`
       }, (resp) => {
         expect(resp.statusCode).to.equal(expectedCode);
         expect(resp.headers[`x-rate-limit-limit`]).to.equal(limit);
@@ -137,6 +187,68 @@ experiment(`hapi-ratelimiter`, () => {
         inject(200, 5, 1),
         inject(200, 5, 0),
         inject(429, 5, 0)
+      ], () => {
+        done();
+      });
+    });
+  });
+
+  experiment(`handles site settings added to request object`, () => {
+    before((done) => {
+      serverGenerator(configs.plugin.defaults, configs.routes.siteLimited, (s) => {
+        server = s;
+        done();
+      });
+    });
+
+    after((done) => {
+      server.stop(done);
+    });
+
+    test(`applies site settings`, (done) => {
+      async.series([
+        injectWithSiteLimits(200, 5, 4),
+        injectWithSiteLimits(200, 5, 3),
+        injectWithSiteLimits(200, 5, 2),
+        injectWithSiteLimits(200, 5, 1),
+        injectWithSiteLimits(200, 5, 0),
+        injectWithSiteLimits(429, 5, 0),
+      ], () => {
+        done();
+      });
+    });
+  });
+
+  experiment(`handles site settings with route type`, () => {
+    before((done) => {
+      serverGenerator(configs.plugin.APIRouteType, configs.routes.siteLimited, (s) => {
+        server = s;
+        done();
+      });
+    });
+
+    after((done) => {
+      server.stop(done);
+    });
+
+    test(`applies site settings`, (done) => {
+      async.series([
+        injectWithSiteLimits(200, 5, 4, APISiteLimits),
+        injectWithSiteLimits(200, 5, 3, APISiteLimits),
+        injectWithSiteLimits(200, 5, 2, APISiteLimits),
+        injectWithSiteLimits(200, 5, 1, APISiteLimits),
+        injectWithSiteLimits(200, 5, 0, APISiteLimits),
+        injectWithSiteLimits(429, 5, 0, APISiteLimits),
+      ], () => {
+        done();
+      });
+    });
+
+    test(`does not apply site settings to routes without type`, (done) => {
+      async.series([
+        injectWithSiteLimits(200, 15, 14, SiteLimits),
+        // Now test with rate_limits set improperly
+        injectWithSiteLimits(200, 15, 13, `Not an array of limits`),
       ], () => {
         done();
       });
