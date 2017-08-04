@@ -173,7 +173,8 @@ exports.register = function(server, options, done) {
       pluginSettings[hapiLimiter] &&
       pluginSettings[hapiLimiter].enable
     ) {
-      response = request.response;
+      // If response is Boom.<something>, then headers are on request.response.output
+      response = request.response.output || request.response;
       response.headers[`X-Rate-Limit-Limit`] = request.plugins[hapiLimiter].limit;
       response.headers[`X-Rate-Limit-Remaining`] = request.plugins[hapiLimiter].remaining;
       response.headers[`X-Rate-Limit-Reset`] = request.plugins[hapiLimiter].reset;
