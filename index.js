@@ -13,10 +13,9 @@ var internals = {
       segment: hapiLimiter
     },
     // Modified from https://www.npmjs.com/package/hapi-limiter#configuration
-    // to allow for multiple limit windows.
-    // Route headers will contain values based on `name: "default"`.
+    // to allow for multiple limit windows e.g.:
     /* limits: [{
-      name: `default`,
+      name: `burst`,
       limit: 5,
       ttl: 5000,
       route_type: "API",
@@ -26,7 +25,7 @@ var internals = {
       ttl: 1000 * 60 * 60 * 24,
       route_type: "API"
     },{
-      name: `default`,
+      name: `burst`,
       limit: 50,
       ttl: 5000,
       route_type: "UI",
@@ -79,38 +78,29 @@ exports.register = function(server, options, done) {
 
     request.plugins[hapiLimiter] = {};
 
+    var limitsRemaining = {
+      limit: [],
+      remaining: [],
+      reset: [],
+    };
+
     function checkLimit(l, callback){
       let limit = l.limit,
-          ttl = l.ttl,
-          name = l.name,
-          type = l.route_type,
           remaining,
           reset,
-          keyValue = pluginSettings.generateKeyFunc(request, name, type);
+          keyValue = pluginSettings.generateKeyFunc(request, l.name, l.route_type);
 
-      if (name === `default`){
-        request.plugins[hapiLimiter].limit = limit;
-      }
       cacheClient.get(keyValue, (err, value, cached) => {
         if ( err ) { return callback(err); }
 
         if ( !cached ) {
-          return cacheClient.set(keyValue, { remaining: limit - 1 }, ttl, (cerr) => {
+          return cacheClient.set(keyValue, { remaining: limit - 1 }, l.ttl, (cerr) => {
             if ( cerr ) { return callback(cerr); }
-            if (name === `default`){
-              request.plugins[hapiLimiter].remaining = limit - 1;
-              reset = Date.now() + ttl;
-              request.plugins[hapiLimiter].reset = reset;
-            }
             return callback();
           });
         }
         remaining = value.remaining - 1;
         reset = Date.now() + cached.ttl;
-        if (name === `default`){
-          request.plugins[hapiLimiter].reset = reset;
-          request.plugins[hapiLimiter].remaining = remaining;
-        }
 
         if ( remaining < 0 ) {
           let error = boom.tooManyRequests(`Rate Limit Exceeded`);
@@ -121,14 +111,27 @@ exports.register = function(server, options, done) {
           error.reformat();
           return callback(error);
         }
+        limitsRemaining.limit.push(limit);
+        limitsRemaining.remaining.push(remaining);
+        limitsRemaining.reset.push(reset);
+
         return cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
       });
+    }
+
+    function setLimitHeaderSources(limits){
+      let p = request.plugins[hapiLimiter];
+
+      p.limit = limits.limit.join();
+      p.remaining = limits.remaining.join();
+      p.reset = limits.reset.join();
     }
 
     function handleCheckResult(err){
       if (err){
         return reply(err);
       }
+      setLimitHeaderSources(limitsRemaining);
       reply.continue();
     }
 
@@ -136,14 +139,14 @@ exports.register = function(server, options, done) {
     let siteLimits = (request.site && request.site.rate_limits && request.site.rate_limits.constructor === Array);
 
     if (siteLimits){
-      // e.g.: [{limit: 10, ttl: 1000, name: "default", route_type: "API"}, {limit: 100, ttl: 10000, name: "default", route_type: "UI"}]
+      // e.g.: [{limit: 10, ttl: 1000, name: "burst", route_type: "API"}, {limit: 100, ttl: 10000, name: "burst", route_type: "UI"}]
       let limits = [];
 
       if (pluginSettings.route_type) {
         // if a route type is assigned to this route, apply those limits
         limits = request.site.rate_limits.filter(l => l.route_type === pluginSettings.route_type);
       } else {
-        // if there is no route type assigned to this route, see if there are "general" limits for this organization
+        // if there is no route type assigned to this route, see if there are "general" limits (no route type)
         limits = request.site.rate_limits.filter(l => !l.route_type);
       }
       if (limits.length > 0){
