@@ -13,37 +13,43 @@ var internals = {
       segment: hapiLimiter
     },
     // Modified from https://www.npmjs.com/package/hapi-limiter#configuration
-    // to allow for multiple limit windows e.g.:
-    /* limits: [{
+    // to allow for multiple limit types and windows e.g.:
+    /* limits: {
+    "API": [{
       name: `burst`,
       limit: 5,
       ttl: 5000,
-      route_type: "API",
     },{
       name: `daily`,
       limit: 720,
       ttl: 1000 * 60 * 60 * 24,
       route_type: "API"
-    },{
+    }],
+    "UI": [{
       name: `burst`,
       limit: 50,
       ttl: 5000,
-      route_type: "UI",
     },{
       name: `daily`,
       limit: 7200,
       ttl: 1000 * 60 * 60 * 24,
-      route_type: "UI"
-    }], */
+    }]}, */
     // default, single limit on the route
     limit: 15,
     ttl: 1000 * 60 * 15,
 
-    generateKeyFunc: function(request, name, type) {
+    /**
+     * Default function for generating a redis key for a particular limit. Can
+     * be overridden by hapi server using the plugin. Uses IP address of request.
+     * @param  {Object} request - Hapi request object
+     * @param  {String} name    - Name of limit, e.g. "burst" or "daily"
+     * @param  {String} type    - Route type to which this limit applies, e.g. "API" or "Auth"
+     * @return {String}         - Redis key for particular limit
+     */
+    generateKeyFunc: function(request, name) {
       var key = [];
 
       key.push(name);
-      key.push(type);
       key.push(request.method);
       key.push(request.path);
       var ip = request.headers[`x-forwarded-for`] || request.info.remoteAddress;
@@ -65,8 +71,62 @@ exports.register = function(server, options, done) {
     cacheClient = server.cache(globalSettings.cache);
   }
 
+  function checkLimit(l, callback){
+    // Check limit object `l` in redis for limit violation (remaining requests < 1);
+    // and set limit key in redis with number of requests remaining.
+
+    cacheClient.get(l.redisKey, (err, value, cached) => {
+      if ( err ) { return callback(err); }
+      const newlimit = {
+        limit: l.limit,
+        remaining: l.limit - 1,
+        reset: Date.now(  ) + l.ttl,
+      };
+
+      if ( !cached ) {
+        return cacheClient.set(
+          l.redisKey,
+          { remaining: newlimit.remaining },
+          l.ttl,
+          cerr => callback(cerr, newlimit)
+        );
+      }
+      newlimit.remaining = value.remaining - 1;
+      newlimit.reset = Date.now() + cached.ttl;
+
+      if ( newlimit.remaining < 0 ) {
+        let error = boom.tooManyRequests(`Rate Limit Exceeded`);
+
+        error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
+        error.output.headers[`X-Rate-Limit-Reset`] = newlimit.reset;
+        error.output.headers[`X-Rate-Limit-Remaining`] = 0;
+        error.reformat();
+        return callback(error);
+      }
+
+      return cacheClient.set(
+        l.redisKey,
+        { remaining: newlimit.remaining },
+        cached.ttl,
+        merr => callback(merr, newlimit)
+      );
+    });
+  }
+
+  const aj = (lim, key) => lim.constructor === Array ? lim.map(l => l[key]).join() : lim[key];
+
+  function decorateRequestWithLimits(request, limits){
+    // Get or create an object on request.plugins to hold values used by 'onPostHandler'
+    const p = request.plugins[hapiLimiter] || {};
+
+    p.limit = aj(limits, `limit`);
+    p.remaining = aj(limits, `remaining`);
+    p.reset = aj(limits, `reset`);
+    request.plugins[hapiLimiter] = p;
+  }
+
   server.ext(`onPreHandler`, (request, reply) => {
-    var routePlugins = request.route.settings.plugins;
+    const routePlugins = request.route.settings.plugins;
 
     if (
       !routePlugins[hapiLimiter] ||
@@ -74,83 +134,35 @@ exports.register = function(server, options, done) {
     ) {
       return reply.continue();
     }
-    var pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
+    const pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
 
-    request.plugins[hapiLimiter] = {};
-
-    var limitsRemaining = {
-      limit: [],
-      remaining: [],
-      reset: [],
-    };
-
-    function checkLimit(l, callback){
-      let limit = l.limit,
-          remaining,
-          reset,
-          keyValue = pluginSettings.generateKeyFunc(request, l.name, l.route_type);
-
-      cacheClient.get(keyValue, (err, value, cached) => {
-        if ( err ) { return callback(err); }
-
-        if ( !cached ) {
-          return cacheClient.set(keyValue, { remaining: limit - 1 }, l.ttl, (cerr) => {
-            if ( cerr ) { return callback(cerr); }
-            return callback();
-          });
-        }
-        remaining = value.remaining - 1;
-        reset = Date.now() + cached.ttl;
-
-        if ( remaining < 0 ) {
-          let error = boom.tooManyRequests(`Rate Limit Exceeded`);
-
-          error.output.headers[`X-Rate-Limit-Limit`] = limit;
-          error.output.headers[`X-Rate-Limit-Reset`] = reset;
-          error.output.headers[`X-Rate-Limit-Remaining`] = 0;
-          error.reformat();
-          return callback(error);
-        }
-        limitsRemaining.limit.push(limit);
-        limitsRemaining.remaining.push(remaining);
-        limitsRemaining.reset.push(reset);
-
-        return cacheClient.set(keyValue, { remaining: remaining }, cached.ttl, callback);
-      });
-    }
-
-    function setLimitHeaderSources(limits){
-      let p = request.plugins[hapiLimiter];
-
-      p.limit = limits.limit.join();
-      p.remaining = limits.remaining.join();
-      p.reset = limits.reset.join();
-    }
-
-    function handleCheckResult(err){
+    function handleCheckResult(err, results){
       if (err){
         return reply(err);
       }
-      setLimitHeaderSources(limitsRemaining);
-      reply.continue();
+      decorateRequestWithLimits(request, results);
+      return reply.continue();
     }
 
     // if this site/organization has limits defined, check those
-    let siteLimits = (request.site && request.site.rate_limits && request.site.rate_limits.constructor === Array);
+    let siteLimits = (request.site && request.site.rate_limits);
 
     if (siteLimits){
-      // e.g.: [{limit: 10, ttl: 1000, name: "burst", route_type: "API"}, {limit: 100, ttl: 10000, name: "burst", route_type: "UI"}]
       let limits = [];
 
       if (pluginSettings.route_type) {
-        // if a route type is assigned to this route, apply those limits
-        limits = request.site.rate_limits.filter(l => l.route_type === pluginSettings.route_type);
+        // If a route type is assigned to this route, apply those limits.
+        // (Allows configuring limits globally and only specifying "route_type" in plugin settings.)
+        limits = request.site.rate_limits[pluginSettings.route_type];
       } else {
         // if there is no route type assigned to this route, see if there are "general" limits (no route type)
-        limits = request.site.rate_limits.filter(l => !l.route_type);
+        limits = request.site.rate_limits.constructor === Array && request.site.rate_limits;
       }
-      if (limits.length > 0){
-        return async.each(limits, checkLimit, handleCheckResult);
+      if (limits && limits.length > 0){
+        limits.forEach(l => {
+          l.redisKey = pluginSettings.generateKeyFunc(request, l.name);
+        });
+        return async.map(limits, checkLimit, handleCheckResult);
       }
     }
 
@@ -164,7 +176,7 @@ exports.register = function(server, options, done) {
     return checkLimit({
       limit: pluginSettings.limit,
       ttl: pluginSettings.ttl,
-      name: `default`,
+      redisKey: pluginSettings.generateKeyFunc(request, `default`),
     }, handleCheckResult);
   });
 
@@ -177,7 +189,7 @@ exports.register = function(server, options, done) {
       pluginSettings[hapiLimiter].enable
     ) {
       // If response is Boom.<something>, then headers are on request.response.output
-      response = request.response.output || request.response;
+      response = request.response.output || request.response || { headers: [] };
       response.headers[`X-Rate-Limit-Limit`] = request.plugins[hapiLimiter].limit;
       response.headers[`X-Rate-Limit-Remaining`] = request.plugins[hapiLimiter].remaining;
       response.headers[`X-Rate-Limit-Reset`] = request.plugins[hapiLimiter].reset;

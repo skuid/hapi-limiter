@@ -19,35 +19,29 @@ var configs = {
 };
 
 var APISiteLimits = {
-  rate_limits: [
-    {
+  rate_limits: {
+    "API": [{
       name: `default`,
       ttl: 1000 * 60,
       limit: 5,
-      route_type: `API`,
-    },
-    {
+    },{
       name: `daily`,
       ttl: 1000 * 60 * 60 * 24,
       limit: 10000,
-      route_type: `API`,
-    },
-  ]
+    }],
+  },
 };
 
 var SiteLimits = {
-  rate_limits: [
-    {
-      name: `default`,
-      ttl: 1000 * 60,
-      limit: 5,
-    },
-    {
-      name: `daily`,
-      ttl: 1000 * 60 * 60 * 24,
-      limit: 10000,
-    },
-  ]
+  rate_limits: [{
+    name: `default`,
+    ttl: 1000 * 60,
+    limit: 5,
+  },{
+    name: `daily`,
+    ttl: 1000 * 60 * 60 * 24,
+    limit: 10000,
+  }],
 };
 
 experiment(`hapi-ratelimiter`, () => {
