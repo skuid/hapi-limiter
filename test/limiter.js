@@ -175,11 +175,11 @@ experiment(`hapi-ratelimiter`, () => {
 
     test(`applies complex settings`, (done) => {
       async.series([
-        inject(200, 5, 4),
-        inject(200, 5, 3),
-        inject(200, 5, 2),
-        inject(200, 5, 1),
-        inject(200, 5, 0),
+        inject(200, `5,720`, `4,719`),
+        inject(200, `5,720`, `3,718`),
+        inject(200, `5,720`, `2,717`),
+        inject(200, `5,720`, `1,716`),
+        inject(200, `5,720`, `0,715`),
         inject(429, 5, 0)
       ], () => {
         done();
@@ -201,11 +201,11 @@ experiment(`hapi-ratelimiter`, () => {
 
     test(`applies site settings`, (done) => {
       async.series([
-        injectWithSiteLimits(200, 5, 4),
-        injectWithSiteLimits(200, 5, 3),
-        injectWithSiteLimits(200, 5, 2),
-        injectWithSiteLimits(200, 5, 1),
-        injectWithSiteLimits(200, 5, 0),
+        injectWithSiteLimits(200, `5,10000`, `4,9999`),
+        injectWithSiteLimits(200, `5,10000`, `3,9998`),
+        injectWithSiteLimits(200, `5,10000`, `2,9997`),
+        injectWithSiteLimits(200, `5,10000`, `1,9996`),
+        injectWithSiteLimits(200, `5,10000`, `0,9995`),
         injectWithSiteLimits(429, 5, 0),
       ], () => {
         done();
@@ -227,18 +227,18 @@ experiment(`hapi-ratelimiter`, () => {
 
     test(`applies site settings`, (done) => {
       async.series([
-        injectWithSiteLimits(200, 5, 4, APISiteLimits),
-        injectWithSiteLimits(200, 5, 3, APISiteLimits),
-        injectWithSiteLimits(200, 5, 2, APISiteLimits),
-        injectWithSiteLimits(200, 5, 1, APISiteLimits),
-        injectWithSiteLimits(200, 5, 0, APISiteLimits),
+        injectWithSiteLimits(200, `5,10000`, `4,9999`, APISiteLimits),
+        injectWithSiteLimits(200, `5,10000`, `3,9998`, APISiteLimits),
+        injectWithSiteLimits(200, `5,10000`, `2,9997`, APISiteLimits),
+        injectWithSiteLimits(200, `5,10000`, `1,9996`, APISiteLimits),
+        injectWithSiteLimits(200, `5,10000`, `0,9995`, APISiteLimits),
         injectWithSiteLimits(429, 5, 0, APISiteLimits),
       ], () => {
         done();
       });
     });
 
-    test(`does not apply site settings to routes without type`, (done) => {
+    test(`does not apply site-wide settings to routes with a type specified`, (done) => {
       async.series([
         injectWithSiteLimits(200, 15, 14, SiteLimits),
         // Now test with rate_limits set improperly

@@ -3,7 +3,7 @@
 exports.offByDefault = {};
 exports.defaults = {};
 exports.customSettings = {
-  ttl: 5000,
+  ttl: 20000,
   limit: 5,
   cache: {
     cache: `test-cache`,
@@ -15,7 +15,7 @@ exports.complexSettings = {
   limits: [{
     name: `default`,
     limit: 5,
-    ttl: 5000,
+    ttl: 20000,
   },{
     name: `daily`,
     limit: 720,

@@ -46,12 +46,15 @@ var internals = {
      * @param  {String} type    - Route type to which this limit applies, e.g. "API" or "Auth"
      * @return {String}         - Redis key for particular limit
      */
-    generateKeyFunc: function(request, name) {
+    generateKeyFunc: function(request, name, type) {
       var key = [];
 
       key.push(name);
       key.push(request.method);
       key.push(request.path);
+      if (type){
+        key.push(type);
+      }
       var ip = request.headers[`x-forwarded-for`] || request.info.remoteAddress;
 
       key.push(ip);
@@ -80,7 +83,7 @@ exports.register = function(server, options, done) {
       const newlimit = {
         limit: l.limit,
         remaining: l.limit - 1,
-        reset: Date.now(  ) + l.ttl,
+        reset: Date.now() + l.ttl,
       };
 
       if ( !cached ) {
@@ -101,7 +104,7 @@ exports.register = function(server, options, done) {
         error.output.headers[`X-Rate-Limit-Reset`] = newlimit.reset;
         error.output.headers[`X-Rate-Limit-Remaining`] = 0;
         error.reformat();
-        return callback(error);
+        return callback(error, newlimit);
       }
 
       return cacheClient.set(
@@ -144,11 +147,17 @@ exports.register = function(server, options, done) {
       return reply.continue();
     }
 
+    function addRedisKey(generateKeyFunc, limitreq, type, limits){
+      limits.forEach(l => {
+        l.redisKey = generateKeyFunc(limitreq, l.name, type);
+      });
+    }
+
     // if this site/organization has limits defined, check those
     let siteLimits = (request.site && request.site.rate_limits);
+    let limits = [];
 
     if (siteLimits){
-      let limits = [];
 
       if (pluginSettings.route_type) {
         // If a route type is assigned to this route, apply those limits.
@@ -159,9 +168,7 @@ exports.register = function(server, options, done) {
         limits = request.site.rate_limits.constructor === Array && request.site.rate_limits;
       }
       if (limits && limits.length > 0){
-        limits.forEach(l => {
-          l.redisKey = pluginSettings.generateKeyFunc(request, l.name);
-        });
+        addRedisKey(pluginSettings.generateKeyFunc, request, pluginSettings.route_type, limits);
         return async.map(limits, checkLimit, handleCheckResult);
       }
     }
@@ -169,7 +176,8 @@ exports.register = function(server, options, done) {
     if (pluginSettings.limits && pluginSettings.limits.constructor === Array){
       // If there were no organization-specific limits, apply global/plugin settings defined on this route
       // Don't bother with `route_type`, since pluginSettings are specified directly on the route(s)
-      return async.each(pluginSettings.limits, checkLimit, handleCheckResult);
+      addRedisKey(pluginSettings.generateKeyFunc, request, null, pluginSettings.limits);
+      return async.map(pluginSettings.limits, checkLimit, handleCheckResult);
     }
 
     // else there will be a simple limit and ttl defined on the plugin settings by default above, use that
