@@ -64,20 +64,42 @@ var internals = {
   }
 };
 
+const aj = (lim, key) => lim.constructor === Array ? lim.map(l => l[key]).join() : lim[key];
 
-exports.register = function(server, options, done) {
-  var globalSettings = Hoek.applyToDefaults(internals.defaults, options);
+function addRedisKey(generateKeyFunc, limitreq, type, limits){
+  limits.forEach(l => {
+    l.redisKey = generateKeyFunc(limitreq, l.name, type);
+  });
+}
 
-  var cacheClient = globalSettings.cacheClient;
 
-  if ( !cacheClient ) {
-    cacheClient = server.cache(globalSettings.cache);
-  }
+function decorateRequestWithLimits(request, limits){
+  // Get or create an object on request.plugins to hold values used by 'onPostHandler'
+  const p = request.plugins[hapiLimiter] || {};
 
-  function checkLimit(l, callback){
+  p.limit = aj(limits, `limit`);
+  p.remaining = aj(limits, `remaining`);
+  p.reset = aj(limits, `reset`);
+  request.plugins[hapiLimiter] = p;
+}
+
+
+function handleCheckResult(request, reply){
+  return function(err, results){
+    if (err){
+      return reply(err);
+    }
+    decorateRequestWithLimits(request, results);
+    return reply.continue();
+  };
+}
+
+
+function checkLimit(cacheClient){
+  return function(l, callback){
+    // l = { <int>limit, <int>ttl, <string>redisKey }
     // Check limit object `l` in redis for limit violation (remaining requests < 1);
     // and set limit key in redis with number of requests remaining.
-
     cacheClient.get(l.redisKey, (err, value, cached) => {
       if ( err ) { return callback(err); }
       const newlimit = {
@@ -114,19 +136,20 @@ exports.register = function(server, options, done) {
         merr => callback(merr, newlimit)
       );
     });
+  };
+}
+
+
+exports.register = function(server, options, done) {
+  var globalSettings = Hoek.applyToDefaults(internals.defaults, options);
+
+  var cacheClient = globalSettings.cacheClient;
+
+  if ( !cacheClient ) {
+    cacheClient = server.cache(globalSettings.cache);
   }
 
-  const aj = (lim, key) => lim.constructor === Array ? lim.map(l => l[key]).join() : lim[key];
-
-  function decorateRequestWithLimits(request, limits){
-    // Get or create an object on request.plugins to hold values used by 'onPostHandler'
-    const p = request.plugins[hapiLimiter] || {};
-
-    p.limit = aj(limits, `limit`);
-    p.remaining = aj(limits, `remaining`);
-    p.reset = aj(limits, `reset`);
-    request.plugins[hapiLimiter] = p;
-  }
+  const checkCachedLimit = checkLimit(cacheClient);
 
   server.ext(`onPreHandler`, (request, reply) => {
     const routePlugins = request.route.settings.plugins;
@@ -138,27 +161,11 @@ exports.register = function(server, options, done) {
       return reply.continue();
     }
     const pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
-
-    function handleCheckResult(err, results){
-      if (err){
-        return reply(err);
-      }
-      decorateRequestWithLimits(request, results);
-      return reply.continue();
-    }
-
-    function addRedisKey(generateKeyFunc, limitreq, type, limits){
-      limits.forEach(l => {
-        l.redisKey = generateKeyFunc(limitreq, l.name, type);
-      });
-    }
-
     // if this site/organization has limits defined, check those
     let siteLimits = (request.site && request.site.rate_limits);
     let limits = [];
 
     if (siteLimits){
-
       if (pluginSettings.route_type) {
         // If a route type is assigned to this route, apply those limits.
         // (Allows configuring limits globally and only specifying "route_type" in plugin settings.)
@@ -169,7 +176,7 @@ exports.register = function(server, options, done) {
       }
       if (limits && limits.length > 0){
         addRedisKey(pluginSettings.generateKeyFunc, request, pluginSettings.route_type, limits);
-        return async.map(limits, checkLimit, handleCheckResult);
+        return async.map(limits, checkCachedLimit, handleCheckResult(request, reply));
       }
     }
 
@@ -177,15 +184,15 @@ exports.register = function(server, options, done) {
       // If there were no organization-specific limits, apply global/plugin settings defined on this route
       // Don't bother with `route_type`, since pluginSettings are specified directly on the route(s)
       addRedisKey(pluginSettings.generateKeyFunc, request, null, pluginSettings.limits);
-      return async.map(pluginSettings.limits, checkLimit, handleCheckResult);
+      return async.map(pluginSettings.limits, checkCachedLimit, handleCheckResult(request, reply));
     }
 
     // else there will be a simple limit and ttl defined on the plugin settings by default above, use that
-    return checkLimit({
+    return checkCachedLimit({
       limit: pluginSettings.limit,
       ttl: pluginSettings.ttl,
       redisKey: pluginSettings.generateKeyFunc(request, `default`),
-    }, handleCheckResult);
+    }, handleCheckResult(request, reply));
   });
 
   server.ext(`onPostHandler`, (request, reply) => {
