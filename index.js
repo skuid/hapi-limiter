@@ -100,41 +100,30 @@ function checkLimit(cacheClient){
     // l = { <int>limit, <int>ttl, <string>redisKey }
     // Check limit object `l` in redis for limit violation (remaining requests < 1);
     // and set limit key in redis with number of requests remaining.
-    cacheClient.get(l.redisKey, (err, value, cached) => {
+
+    // In the absence of actual methods on catbox for multi(), we have to drop down
+    // to redis ourselves (assuming redis) in order to avoid race conditions (iow, every
+    // request to this should increment the counter, even if they all come in simultaneously).
+    return cacheClient._cache.connection.client.get(l.redisKey, (err, value) => {
       if ( err ) { return callback(err); }
-      const newlimit = {
-        limit: l.limit,
-        remaining: l.limit - 1,
-        reset: Date.now() + l.ttl,
-      };
+      const reset = Date.now() + l.ttl;
 
-      if ( !cached ) {
-        return cacheClient.set(
-          l.redisKey,
-          { remaining: newlimit.remaining },
-          l.ttl,
-          cerr => callback(cerr, newlimit)
-        );
-      }
-      newlimit.remaining = value.remaining - 1;
-      newlimit.reset = Date.now() + cached.ttl;
-
-      if ( newlimit.remaining < 0 ) {
-        let error = boom.tooManyRequests(`Rate Limit Exceeded`);
+      // value starts at 0
+      if ( (value - 1) > l.limit ) {
+        const message = `Rate Limit Exceeded`;
+        const error = boom.tooManyRequests(message);
 
         error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
-        error.output.headers[`X-Rate-Limit-Reset`] = newlimit.reset;
+        error.output.headers[`X-Rate-Limit-Reset`] = reset;
         error.output.headers[`X-Rate-Limit-Remaining`] = 0;
         error.reformat();
-        return callback(error, newlimit);
+        return callback(error, message);
       }
 
-      return cacheClient.set(
-        l.redisKey,
-        { remaining: newlimit.remaining },
-        cached.ttl,
-        merr => callback(merr, newlimit)
-      );
+      return cacheClient._cache.connection.client.multi()
+        .incr(l.redisKey)
+        .expire(l.redisKey, l.ttl / 1000)
+        .exec((merr, reply) => callback(merr, reply));
     });
   };
 }
@@ -163,9 +152,10 @@ exports.register = function(server, options, done) {
     const pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
     // if this site/organization has limits defined, check those
     let siteLimits = (request.site && request.site.rate_limits);
-    let limits = [];
 
     if (siteLimits){
+      let limits = [];
+
       if (pluginSettings.route_type) {
         // If a route type is assigned to this route, apply those limits.
         // (Allows configuring limits globally and only specifying "route_type" in plugin settings.)
