@@ -104,27 +104,30 @@ function checkLimit(cacheClient){
     // In the absence of actual methods on catbox for multi(), we have to drop down
     // to redis ourselves (assuming redis) in order to avoid race conditions (iow, every
     // request to this should increment the counter, even if they all come in simultaneously).
-    return cacheClient._cache.connection.client.get(l.redisKey, (err, value) => {
-      if ( err ) { return callback(err); }
-      const reset = Date.now() + l.ttl;
+    return cacheClient._cache.connection.client.multi()
+      .incr(l.redisKey)
+      .expire(l.redisKey, l.ttl / 1000)
+      .exec((err, values) => {
+        if ( err ) { return callback(err, null); }
+        if (!values[0]) { return callback(`No redis value for initial incr`, null); }
+        // value starts at 0
+        const value = values[0][1] + 1,
+              limit = l.limit,
+              reset = Date.now() + l.ttl,
+              remaining = limit - value;
 
-      // value starts at 0
-      if ( (value - 1) > l.limit ) {
-        const message = `Rate Limit Exceeded`;
-        const error = boom.tooManyRequests(message);
+        if ( value > limit ) {
+          const message = `Rate Limit Exceeded`;
+          const error = boom.tooManyRequests(message);
 
-        error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
-        error.output.headers[`X-Rate-Limit-Reset`] = reset;
-        error.output.headers[`X-Rate-Limit-Remaining`] = 0;
-        error.reformat();
-        return callback(error, message);
-      }
-
-      return cacheClient._cache.connection.client.multi()
-        .incr(l.redisKey)
-        .expire(l.redisKey, l.ttl / 1000)
-        .exec((merr, reply) => callback(merr, reply));
-    });
+          error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
+          error.output.headers[`X-Rate-Limit-Reset`] = reset;
+          error.output.headers[`X-Rate-Limit-Remaining`] = 0;
+          error.reformat();
+          return callback(error, null);
+        }
+        return callback(null, { limit, remaining, reset });
+      });
   };
 }
 
