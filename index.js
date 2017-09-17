@@ -8,9 +8,6 @@ var hapiLimiter = `hapi-limiter`;
 var internals = {
   defaults: {
     cache: {
-      // https://github.com/hapijs/catbox?ts=2#policy
-      expiresIn: 1000 * 60 * 60 * 24,
-      segment: hapiLimiter
     },
     // Modified from https://www.npmjs.com/package/hapi-limiter#configuration
     // to allow for multiple limit types and windows e.g.:
@@ -95,23 +92,29 @@ function handleCheckResult(request, reply){
 }
 
 
-function checkLimit(cacheClient){
+function checkLimit(redis){
   return function(l, callback){
     // l = { <int>limit, <int>ttl, <string>redisKey }
     // Check limit object `l` in redis for limit violation (remaining requests < 1);
     // and set limit key in redis with number of requests remaining.
 
-    // In the absence of actual methods on catbox for multi(), we have to drop down
-    // to redis ourselves (assuming redis) in order to avoid race conditions (iow, every
-    // request to this should increment the counter, even if they all come in simultaneously).
-    return cacheClient._cache.connection.client.multi()
-      .incr(l.redisKey)
-      .expire(l.redisKey, l.ttl / 1000)
-      .exec((err, values) => {
+    const tempKey = l.redisKey + `:temp`;
+    const realKey = l.redisKey;
+    const ttlseconds = l.ttl / 1000;
+
+    return redis.multi()
+      .setex(tempKey, ttlseconds, 0)
+      .renamenx(tempKey, realKey)
+      .incr(realKey)
+      .ttl(realKey)
+      .exec((err, results) => {
         if ( err ) { return callback(err, null); }
-        if (!values[0]) { return callback(`No redis value for initial incr`, null); }
+        // automatically recover from possible race condition
+        if (results[3] === -1) {
+          redis.expire(realKey, ttlseconds);
+        }
         // value starts at 0
-        const value = values[0][1] + 1,
+        const value = results[2] + 1,
               limit = l.limit,
               reset = Date.now() + l.ttl,
               remaining = limit - value;
@@ -133,15 +136,9 @@ function checkLimit(cacheClient){
 
 
 exports.register = function(server, options, done) {
-  var globalSettings = Hoek.applyToDefaults(internals.defaults, options);
-
-  var cacheClient = globalSettings.cacheClient;
-
-  if ( !cacheClient ) {
-    cacheClient = server.cache(globalSettings.cache);
-  }
-
-  const checkCachedLimit = checkLimit(cacheClient);
+  const globalSettings = Hoek.applyToDefaults(internals.defaults, options);
+  const cache = options.cache;
+  const checkCachedLimit = checkLimit(cache);
 
   server.ext(`onPreHandler`, (request, reply) => {
     const routePlugins = request.route.settings.plugins;
