@@ -1,9 +1,8 @@
-"use strict";
 
 var Hoek = require(`hoek`);
 var boom = require(`boom`);
-var async = require(`async`);
 var hapiLimiter = `hapi-limiter`;
+
 
 var internals = {
   defaults: {
@@ -81,19 +80,22 @@ function decorateRequestWithLimits(request, limits){
 }
 
 
-function handleCheckResult(request, reply){
-  return function(err, results){
-    if (err){
-      return reply(err);
+function handleCheckResult(request, h){
+  return function(results){
+    let error = results.find(r => r instanceof Error);
+
+    if (error) {
+      return error;
     }
+
     decorateRequestWithLimits(request, results);
-    return reply.continue();
+    return h.continue;
   };
 }
 
 
 function checkLimit(redis){
-  return function(l, callback){
+  return async function(l){
     // l = { <int>limit, <int>ttl, <string>redisKey }
     // Check limit object `l` in redis for limit violation (remaining requests < 1);
     // and set limit key in redis with number of requests remaining.
@@ -102,52 +104,53 @@ function checkLimit(redis){
     const realKey = l.redisKey;
     const ttlseconds = l.ttl / 1000;
 
-    return redis.multi()
+    const results = await redis.multi()
       .setex(tempKey, ttlseconds, 0)
       .renamenx(tempKey, realKey)
       .incr(realKey)
       .ttl(realKey)
-      .exec((err, results) => {
-        if ( err ) { return callback(err, null); }
-        // automatically recover from possible race condition
-        if (results[3] === -1) {
-          redis.expire(realKey, ttlseconds);
-        }
-        // value starts at 0
-        const value = results[2] + 1,
-              limit = l.limit,
-              reset = Date.now() + l.ttl,
-              remaining = limit - value;
+      .execAsync();
 
-        if ( value > limit ) {
-          const message = `Rate Limit Exceeded`;
-          const error = boom.tooManyRequests(message);
+    // automatically recover from possible race condition
+    if (results[3] === -1) {
+      redis.expire(realKey, ttlseconds);
+    }
+    // value starts at 0
+    const value = results[2] + 1,
+          limit = l.limit,
+          reset = Date.now() + l.ttl,
+          remaining = limit - value;
 
-          error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
-          error.output.headers[`X-Rate-Limit-Reset`] = reset;
-          error.output.headers[`X-Rate-Limit-Remaining`] = 0;
-          error.reformat();
-          return callback(error, null);
-        }
-        return callback(null, { limit, remaining, reset });
-      });
+    if ( value > limit ) {
+      const message = `Rate Limit Exceeded`;
+      const error = boom.tooManyRequests(message);
+
+      error.output.headers[`X-Rate-Limit-Limit`] = l.limit;
+      error.output.headers[`X-Rate-Limit-Reset`] = reset;
+      error.output.headers[`X-Rate-Limit-Remaining`] = 0;
+      error.reformat();
+      return error;
+    }
+    return { limit, remaining, reset };
   };
 }
 
 
-exports.register = function(server, options, done) {
+async function register(server, options) {
   const globalSettings = Hoek.applyToDefaults(internals.defaults, options);
   const cache = options.cache;
   const checkCachedLimit = checkLimit(cache);
 
-  server.ext(`onPreHandler`, (request, reply) => {
+  server.ext(`onPreHandler`, async (request, h) => {
     const routePlugins = request.route.settings.plugins;
+    const handler = handleCheckResult(request, h);
+    let result, results;
 
     if (
       !routePlugins[hapiLimiter] ||
       !routePlugins[hapiLimiter].enable
     ) {
-      return reply.continue();
+      return h.continue;
     }
     const pluginSettings = Hoek.applyToDefaults(globalSettings, routePlugins[hapiLimiter]);
     // if this site/organization has limits defined, check those
@@ -166,7 +169,8 @@ exports.register = function(server, options, done) {
       }
       if (limits && limits.length > 0){
         addRedisKey(pluginSettings.generateKeyFunc, request, pluginSettings.route_type, limits);
-        return async.map(limits, checkCachedLimit, handleCheckResult(request, reply));
+        results = await Promise.all(limits.map(checkCachedLimit));
+        return handler(results);
       }
     }
 
@@ -174,18 +178,20 @@ exports.register = function(server, options, done) {
       // If there were no organization-specific limits, apply global/plugin settings defined on this route
       // Don't bother with `route_type`, since pluginSettings are specified directly on the route(s)
       addRedisKey(pluginSettings.generateKeyFunc, request, null, pluginSettings.limits);
-      return async.map(pluginSettings.limits, checkCachedLimit, handleCheckResult(request, reply));
+      results = await Promise.all(pluginSettings.limits.map(checkCachedLimit));
+      return handler(results);
     }
 
     // else there will be a simple limit and ttl defined on the plugin settings by default above, use that
-    return checkCachedLimit({
+    result = await checkCachedLimit({
       limit: pluginSettings.limit,
       ttl: pluginSettings.ttl,
       redisKey: pluginSettings.generateKeyFunc(request, `default`),
-    }, handleCheckResult(request, reply));
+    });
+    return handler([ result ]);
   });
 
-  server.ext(`onPostHandler`, (request, reply) => {
+  server.ext(`onPostHandler`, async (request, h) => {
     var pluginSettings = request.route.settings.plugins;
     var response;
 
@@ -200,12 +206,11 @@ exports.register = function(server, options, done) {
       response.headers[`X-Rate-Limit-Reset`] = request.plugins[hapiLimiter].reset;
     }
 
-    reply.continue();
+    return h.continue;
   });
+}
 
-  done();
-};
-
-exports.register.attributes = {
-  pkg: require(`./package.json`)
+exports.plugin = {
+  pkg: require(`./package.json`),
+  register: register,
 };

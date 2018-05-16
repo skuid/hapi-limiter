@@ -77,11 +77,5 @@ env:
   node: true
 
 parserOptions:
-  ecmaFeatures:
-    arrowFunctions: true
-    blockBindings: true
-    defaultParams: true
-    destructuring: true
-    forOf: true
-    spread: true
-    templateStrings: true
+  ecmaVersion: "2017"
+  sourceType: "module"
